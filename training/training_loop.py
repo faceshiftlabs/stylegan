@@ -23,7 +23,7 @@ from metrics import metric_base
 #----------------------------------------------------------------------------
 # Just-in-time processing of training images before feeding them to the networks.
 
-def process_reals(x, lod, mirror_augment, drange_data, drange_net):
+def process_reals(x, lod, mirror_augment, drange_data, drange_net, hue_augment):
     with tf.name_scope('ProcessReals'):
         with tf.name_scope('DynamicRange'):
             x = tf.cast(x, tf.float32)
@@ -34,6 +34,11 @@ def process_reals(x, lod, mirror_augment, drange_data, drange_net):
                 mask = tf.random_uniform([s[0], 1, 1, 1], 0.0, 1.0)
                 mask = tf.tile(mask, [1, s[1], s[2], s[3]])
                 x = tf.where(mask < 0.5, x, tf.reverse(x, axis=[3]))
+        if hue_augment:
+            with tf.name_scope('HueAugment'):
+                x = tf.transpose(x, [0, 2, 3, 1])  # NCHW to NHWC
+                x = tf.image.random_hue(x, 0.5)
+                x = tf.transpose(x, [0, 3, 1, 2])  # NHWC to NCHW
         with tf.name_scope('FadeLOD'): # Smooth crossfade between consecutive levels-of-detail.
             s = tf.shape(x)
             y = tf.reshape(x, [-1, s[1], s[2]//2, 2, s[3]//2, 2])
@@ -128,6 +133,7 @@ def training_loop(
     reset_opt_for_new_lod   = True,     # Reset optimizer internal state (e.g. Adam moments) when new layers are introduced?
     total_kimg              = 15000,    # Total length of the training, measured in thousands of real images.
     mirror_augment          = False,    # Enable mirror augment?
+    hue_augment             = False,    # Enable hue augment?
     drange_net              = [-1,1],   # Dynamic range used when feeding image data to the networks.
     image_snapshot_ticks    = 1,        # How often to export image snapshots?
     network_snapshot_ticks  = 10,       # How often to export network snapshots?
@@ -177,7 +183,7 @@ def training_loop(
             D_gpu = D if gpu == 0 else D.clone(D.name + '_shadow')
             lod_assign_ops = [tf.assign(G_gpu.find_var('lod'), lod_in), tf.assign(D_gpu.find_var('lod'), lod_in)]
             reals, labels = training_set.get_minibatch_tf()
-            reals = process_reals(reals, lod_in, mirror_augment, training_set.dynamic_range, drange_net)
+            reals = process_reals(reals, lod_in, mirror_augment, training_set.dynamic_range, drange_net, hue_augment)
             with tf.name_scope('G_loss'), tf.control_dependencies(lod_assign_ops):
                 G_loss = dnnlib.util.call_func_by_name(G=G_gpu, D=D_gpu, opt=G_opt, training_set=training_set, minibatch_size=minibatch_split, **G_loss_args)
             with tf.name_scope('D_loss'), tf.control_dependencies(lod_assign_ops):
